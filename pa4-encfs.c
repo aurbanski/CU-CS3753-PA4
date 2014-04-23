@@ -24,6 +24,9 @@
 
 #define FUSE_USE_VERSION 28
 #define HAVE_SETXATTR
+#define PASS -1
+#define DECRYPT 0
+#define ENCRYPT 1
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -54,6 +57,7 @@
 
 struct xmp_state {
     char *rootdir;
+    char *password;
 };
 
 #define XMP_DATA ((struct xmp_state *) fuse_get_context()->private_data)
@@ -478,7 +482,7 @@ int main(int argc, char *argv[])
     }
 
     if ((argc < 3) || (argv[argc-2][0] == '-') || (argv[argc-1][0] == '-')) {
-        fprintf(stderr, "usage:  pa4-encfs [FUSE and mount options] rootDir mountPoint\n");
+        fprintf(stderr, "usage:  pa4-encfs password rootDir mountPoint\n");
         abort();
     }
 
@@ -489,10 +493,12 @@ int main(int argc, char *argv[])
         abort();
     }
 
+    xmp_data->password = argv[argc-3];
     xmp_data->rootdir = realpath(argv[argc-2], NULL);
+    argv[argc-3] = argv[argc-2];
     argv[argc-2] = argv[argc-1];
     argv[argc-1] = NULL;
-    argc--;
+    argc -= 2;
 
 	return fuse_main(argc, argv, &xmp_oper, xmp_data);
 }
