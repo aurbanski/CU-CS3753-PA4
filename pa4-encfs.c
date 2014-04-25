@@ -24,6 +24,10 @@
 
 #define FUSE_USE_VERSION 28
 #define HAVE_SETXATTR
+#define _XOPEN_SOURCE 700
+#define XATTR_ENCRYPTED "user.encrypted"
+#define ENCRYPTED "true"
+#define UNENCRYPTED "false"
 #define PASS -1
 #define DECRYPT 0
 #define ENCRYPT 1
@@ -32,28 +36,24 @@
 #include <config.h>
 #endif
 
-#ifdef linux
-/* For pread()/pwrite() */
-#define _XOPEN_SOURCE 500
-#endif
-
 #include <ctype.h>
-#include <libgen.h>
-#include <stdlib.h>
-#include <sys/types.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <fuse.h>
+#include <libgen.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <errno.h>
+#include <sys/types.h>
 #include <sys/time.h>
 #ifdef HAVE_SETXATTR
 #include <sys/xattr.h>
 #endif
 
-#include <limits.h>
+#include "aes-crypt.h"
 
 struct xmp_state {
     char *rootdir;
@@ -303,46 +303,120 @@ static int xmp_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
+/* Method to read an encrypted file with the XMP file system. Read supports the
+ * XATTR flag, so it will not perform any crypto operations if the file is not
+ * encrypted. If the file is encrypted, the file will be decrypted and read
+ */
 static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
 		    struct fuse_file_info *fi)
 {
-	int fd;
-	int res;
+    int res;
+    FILE *file, *memfile;
+    char *memorytext;
+    size_t memorysize;
+    int docryptoption = PASS;
+    char xattr_value[8];
+    ssize_t xattr_len;
+
+    // Convert the path to the full path
     char fpath[PATH_MAX];
-
     xmp_fullpath(fpath, path);
-	(void) fi;
-	fd = open(fpath, O_RDONLY);
-	if (fd == -1)
-		return -errno;
 
-	res = pread(fd, buf, size, offset);
-	if (res == -1)
-		res = -errno;
+    (void) fi;
 
-	close(fd);
-	return res;
+    // Open the file to be read
+    file = fopen(fpath, "r");
+    if (file == NULL)
+      return -errno;
+
+    // Open a file in memory
+    memfile = open_memstream(&memorytext, &memorysize);
+    if (memfile == NULL)
+      return -errno;
+
+    // Check to see if the file is encrypted by looking at its extended
+  	// attributes. If it is encrypted, set the option to decrypt the file
+    xattr_len = getxattr(fpath, XATTR_ENCRYPTED, xattr_value, 8);
+    if (xattr_len != -1 && !memcmp(xattr_value, ENCRYPTED, 4))
+      docryptoption = DECRYPT;
+
+    // Decrypt the file (if it is encrypted) to the file that was open
+  	// in memory. Then close the file.
+    do_crypt(file, memfile, docryptoption, XMP_DATA->password);
+    fclose(file);
+
+    // Read the file from memory.
+    fflush(memfile);
+    fseek(memfile, offset, SEEK_SET);
+    res = fread(buf, 1, size, memfile);
+    if (res == -1)
+      res = -errno;
+
+    fclose(memfile);
+
+  return res;
 }
 
+/* Method to write to an encrypted file in the mirrored file system. Uses
+ * the password given on mounting of the file system. If the file system is
+ * unmounted, then the file will show up as jibberish if opened.
+ *
+ * Most of the functionality is the same as xmp_read, except for fwrite()
+ * instead of fread, and additional functionality to write the encrypted 
+ * file at the end instead of stopping after the file has been read.
+ */
 static int xmp_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
-	int fd;
-	int res;
+    int res;
+    FILE *file, *memfile;
+    char *memorytext;
+    size_t memorysize;
+    int docryptoption = PASS;
+    char xattr_value[8];
+    ssize_t xattr_len;
+
     char fpath[PATH_MAX];
-
     xmp_fullpath(fpath, path);
-	(void) fi;
-	fd = open(fpath, O_WRONLY);
-	if (fd == -1)
-		return -errno;
 
-	res = pwrite(fd, buf, size, offset);
-	if (res == -1)
-		res = -errno;
+    (void) fi;
 
-	close(fd);
-	return res;
+    file = fopen(fpath, "r");
+    if (file == NULL)
+      return -errno;
+
+    memfile = open_memstream(&memorytext, &memorysize);
+    if (memfile == NULL)
+      return -errno;
+
+    xattr_len = getxattr(fpath, XATTR_ENCRYPTED, xattr_value, 8);
+    if (xattr_len != -1 && !memcmp(xattr_value, ENCRYPTED, 4))
+      docryptoption = DECRYPT;
+
+    do_crypt(file, memfile, docryptoption, XMP_DATA->password);
+    fclose(file);
+
+    // Get the file and write it to memory
+    fseek(memfile, offset, SEEK_SET);
+    res = fwrite(buf, 1, size, memfile);
+    if (res == -1)
+      res = -errno;
+    fflush(memfile);
+
+    // Need to make sure that we are encrypting the file
+    if (docryptoption == DECRYPT)
+      docryptoption = ENCRYPT;
+
+  	// Reopen the file in write mode, and write the contents to the file after
+  	// encrypting the contents to be written
+    file = fopen(fpath, "w");
+    fseek(memfile, 0, SEEK_SET);
+    do_crypt(memfile, file, docryptoption, XMP_DATA->password);
+
+    fclose(memfile);
+    fclose(file);
+
+    return res;
 }
 
 static int xmp_statfs(const char *path, struct statvfs *stbuf)
@@ -358,19 +432,38 @@ static int xmp_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
+/* This method supports creating an encrypted file. */
 static int xmp_create(const char* path, mode_t mode, struct fuse_file_info* fi) {
+    FILE *file, *memfile;
+    char *memorytext;
+    size_t memorysize;
+
+    char fpath[PATH_MAX];
+    xmp_fullpath(fpath, path);
 
     (void) fi;
-    char fpath[PATH_MAX];
+    (void) mode;
 
-    xmp_fullpath(fpath, path);
-    int res;
-    res = creat(fpath, mode);
-    if(res == -1)
-	return -errno;
+    // Create the file with write permissions to be written to 
+    file = fopen(fpath, "w");
+    if (file == NULL)
+      return -errno;
 
-    close(res);
+    // Open a file in memory
+    memfile = open_memstream(&memorytext, &memorysize);
+    if (memfile == NULL)
+      return -errno;
 
+    // Call do_crypt on the memory file to encrypt the memory file and write
+  	// it to the actual file.
+    do_crypt(memfile, file, ENCRYPT, XMP_DATA->password);
+    fclose(memfile);
+
+    // Set the file's extended attributes 
+    if (setxattr(fpath, XATTR_ENCRYPTED, ENCRYPTED, 4, 0))
+      return -errno;
+
+    fclose(file);
     return 0;
 }
 
@@ -495,8 +588,8 @@ int main(int argc, char *argv[])
 
     xmp_data->password = argv[argc-3];
     xmp_data->rootdir = realpath(argv[argc-2], NULL);
-    argv[argc-3] = argv[argc-2];
-    argv[argc-2] = argv[argc-1];
+    argv[argc-3] = argv[argc-1];
+    argv[argc-2] = NULL;
     argv[argc-1] = NULL;
     argc -= 2;
 
