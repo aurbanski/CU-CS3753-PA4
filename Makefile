@@ -32,19 +32,25 @@ openssl-examples: $(OPENSSL_EXAMPLES)
 fusehello: fusehello.o
 	$(CC) $(LFLAGS) $^ -o $@ $(LLIBSFUSE)
 
+fusexmp: fusexmp.o
+	$(CC) $(LFLAGS) $^ -o $@ $(LLIBSFUSE)
+
+pa4-encfs: pa4-encfs.o aes-crypt.o
+	$(CC) $(LFLAGS) $^ -o $@ $(LLIBSFUSE) $(LLIBSOPENSSL)
+
 xattr-util: xattr-util.o
 	$(CC) $(LFLAGS) $^ -o $@
 
 aes-crypt-util: aes-crypt-util.o aes-crypt.o
 	$(CC) $(LFLAGS) $^ -o $@ $(LLIBSOPENSSL)
 
-aes-crypt: aes-crypt.o
-	$(CC) $(LFLAGS) $^ -o $@ $(LLIBSOPENSSL)
-
-pa4-encfs: pa4-encfs.o aes-crypt.o
-	$(CC) $(LFLAGS) $^ -o $@ $(LLIBSFUSE) $(LLIBSOPENSSL)
-
 fusehello.o: fusehello.c
+	$(CC) $(CFLAGS) $(CFLAGSFUSE) $<
+
+fusexmp.o: fusexmp.c
+	$(CC) $(CFLAGS) $(CFLAGSFUSE) $<
+
+pa4-encfs.o: pa4-encfs.c
 	$(CC) $(CFLAGS) $(CFLAGSFUSE) $<
 
 xattr-util.o: xattr-util.c
@@ -55,9 +61,6 @@ aes-crypt-util.o: aes-crypt-util.c aes-crypt.h
 
 aes-crypt.o: aes-crypt.c aes-crypt.h
 	$(CC) $(CFLAGS) $<
-
-pa4-encfs.o: pa4-encfs.c aes-crypt.h
-	$(CC) $(CFLAGS) $(CFLAGSFUSE) $<
 
 clean:
 	rm -f $(FUSE_EXAMPLES)
