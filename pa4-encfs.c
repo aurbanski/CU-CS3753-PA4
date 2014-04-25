@@ -316,7 +316,7 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     size_t memorysize;
     int docryptoption = PASS;
     char xattr_value[8];
-    ssize_t xattr_len;
+    ssize_t xattrlength;
 
     // Convert the path to the full path
     char fpath[PATH_MAX];
@@ -336,8 +336,8 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
 
     // Check to see if the file is encrypted by looking at its extended
   	// attributes. If it is encrypted, set the option to decrypt the file
-    xattr_len = getxattr(fpath, XATTR_ENCRYPTED, xattr_value, 8);
-    if (xattr_len != -1 && !memcmp(xattr_value, ENCRYPTED, 4))
+    xattrlength = getxattr(fpath, XATTR_ENCRYPTED, xattr_value, 8);
+    if (xattrlength != -1 && !memcmp(xattr_value, ENCRYPTED, 4))
       docryptoption = DECRYPT;
 
     // Decrypt the file (if it is encrypted) to the file that was open
@@ -374,7 +374,7 @@ static int xmp_write(const char *path, const char *buf, size_t size,
     size_t memorysize;
     int docryptoption = PASS;
     char xattr_value[8];
-    ssize_t xattr_len;
+    ssize_t xattrlength;
 
     char fpath[PATH_MAX];
     xmp_fullpath(fpath, path);
@@ -389,8 +389,8 @@ static int xmp_write(const char *path, const char *buf, size_t size,
     if (memfile == NULL)
       return -errno;
 
-    xattr_len = getxattr(fpath, XATTR_ENCRYPTED, xattr_value, 8);
-    if (xattr_len != -1 && !memcmp(xattr_value, ENCRYPTED, 4))
+    xattrlength = getxattr(fpath, XATTR_ENCRYPTED, xattr_value, 8);
+    if (xattrlength != -1 && !memcmp(xattr_value, ENCRYPTED, 4))
       docryptoption = DECRYPT;
 
     do_crypt(file, memfile, docryptoption, XMP_DATA->password);
